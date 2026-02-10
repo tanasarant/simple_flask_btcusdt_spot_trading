@@ -211,30 +211,30 @@ def send_initial_balance():
     emit('balance', {'usdt':usdt, 'btc':btc})
 
 # -------------------- BINANCE WS --------------------
-async def ws_listener():
+def binance_ws_loop():
     while True:
         try:
-            async with websockets.connect(BINANCE_WS_URL) as ws:
-                async for msg in ws:
-                    d = json.loads(msg)
-                    market_data['bids'] = d['bids']
-                    market_data['asks'] = d['asks']
-                    socketio.emit('market', market_data)
-        except Exception:
-            await asyncio.sleep(3)
-
-
-def start_ws():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(ws_listener())
+            import websocket  # websocket-client
+            ws = websocket.create_connection(
+                "wss://stream.binance.com:9443/ws/btcusdt@depth5@1000ms",
+                timeout=10
+            )
+            while True:
+                msg = ws.recv()
+                d = json.loads(msg)
+                market_data['bids'] = d.get('bids', [])
+                market_data['asks'] = d.get('asks', [])
+                socketio.emit('market', market_data)
+        except Exception as e:
+            print("Binance WS error:", e)
+            socketio.sleep(3)
 
 # -------------------- MAIN --------------------
 import os
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
-    threading.Thread(target=start_ws, daemon=False).start()
+    socketio.start_background_task(binance_ws_loop)
     socketio.run(
         app,
         host='0.0.0.0',
