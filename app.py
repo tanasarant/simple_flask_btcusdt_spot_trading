@@ -1,41 +1,43 @@
-# Flask Binance BTCUSDT Trading Game (Simple Spot Simulator)
-# ----------------------------------------------------
-# Features:
-# - Live BTCUSDT orderbook via Binance WebSocket (Bid/Ask + Volume multi rows)
-# - TradingView Chart Widget (replaces big ticker price)
-# - Simple all-in spot trading game
-# - Persistent portfolio via browser cookies (no expiry)
-# - Commission 0.1% per trade
-# - Minimum trade value: 10.1 USDT (by value)
-# - Trade history table (client-side only)
+# Flask Binance BTCUSDT Trading Game (REST API version for Railway)
+# ---------------------------------------------------------------
+# - Replace Binance WebSocket with REST polling (every 1 second)
+# - Easy-to-read debug logs
+# - Simple spot all-in trading game (education only)
 
-import asyncio
-import json
+import time
 import threading
+import requests
 from flask import Flask, render_template_string, request, make_response
 from flask_socketio import SocketIO, emit
-import websockets
 
+# ==================== APP SETUP ====================
 app = Flask(__name__)
 socketio = SocketIO(app, async_mode="threading")
 
-# -------------------- CONFIG --------------------
-BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth5@1000ms"
+# ==================== CONFIG ====================
+BINANCE_DEPTH_URL = "https://api.binance.com/api/v3/depth"
+SYMBOL = "BTCUSDT"
+DEPTH_LIMIT = 5
+FETCH_INTERVAL = 1  # seconds
+
 FEE_RATE = 0.001
 MIN_TRADE_USDT = 10.1
 BTC_PRECISION = 8
 USDT_PRECISION = 8
 DEFAULT_USDT = 100.0
 
-# -------------------- MARKET DATA --------------------
+# ==================== MARKET DATA ====================
 market_data = {
     "bids": [],
     "asks": []
 }
 
-# -------------------- HTML --------------------
-HTML = """
-<!DOCTYPE html>
+# ==================== DEBUG HELPER ====================
+def debug(msg):
+    print(f"[DEBUG] {msg}", flush=True)
+
+# ==================== HTML (unchanged logic) ====================
+HTML = """<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -59,29 +61,6 @@ button { font-size:18px; padding:10px 20px; margin:10px; cursor:pointer }
 
 <h1>BTCUSDT Spot Trading (Game)</h1>
 
-<!-- TradingView Widget -->
-<div class="tradingview-widget-container" style="width:70%; margin:auto">
-  <div id="tradingview_chart"></div>
-  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script type="text/javascript">
-  new TradingView.widget({
-    "width": "100%",
-    "height": 400,
-    "symbol": "BINANCE:BTCUSDT",
-    "interval": "1",
-    "timezone": "Asia/Bangkok",
-    "theme": "dark",
-    "style": "1",
-    "locale": "en",
-    "toolbar_bg": "#111",
-    "enable_publishing": false,
-    "hide_top_toolbar": false,
-    "save_image": false,
-    "container_id": "tradingview_chart"
-  });
-  </script>
-</div>
-
 <h3>Orderbook</h3>
 <table>
 <thead>
@@ -100,157 +79,117 @@ button { font-size:18px; padding:10px 20px; margin:10px; cursor:pointer }
 
 <div class="balance" id="balance"></div>
 
-<h3>Trade History</h3>
-<table>
-<thead>
-<tr><th>BTC</th><th>USDT</th></tr>
-</thead>
-<tbody id="history"></tbody>
-</table>
-
-<div class="notice">
-⚠️ หากท่านไม่ได้ตั้งค่าให้เบราว์เซอร์เก็บคุกกี้<br>
-ท่านอาจเล่นต่อไม่ได้หากพักการเล่นนานกว่า ~1 ชั่วโมง (เช่น ปิดเครื่อง หรือระบบล้าง session)
-</div>
-
 <script>
 const socket = io();
-let historyTable = document.getElementById("history");
 
-function addHistory(btc, usdt){
-    const row = `<tr><td>${btc}</td><td>${usdt}</td></tr>`;
-    historyTable.innerHTML += row;
-}
-/*
 socket.on('market', data => {
-    const bids = data.bids;
-    const asks = data.asks;
-    if(!bids.length || !asks.length) return;
-
     let rows = "";
-    for(let i=0;i<Math.max(bids.length, asks.length);i++){
-        const b = bids[i] || ["",""];
-        const a = asks[i] || ["",""];
-        rows += `<tr><td class='bid'>${b[0]}</td><td class='bid'>${b[1]}</td><td class='ask'>${a[0]}</td><td class='ask'>${a[1]}</td></tr>`;
+    for(let i=0;i<Math.max(data.bids.length, data.asks.length);i++){
+        const b = data.bids[i] || ["",""];
+        const a = data.asks[i] || ["",""];
+        rows += `<tr>
+        <td class='bid'>${b[0]}</td><td class='bid'>${b[1]}</td>
+        <td class='ask'>${a[0]}</td><td class='ask'>${a[1]}</td>
+        </tr>`;
     }
-    document.getElementById('orderbook').innerHTML = rows;
-});
-*/
-socket.on('market', data => {
-    console.log("MARKET EVENT:", data);
+    document.getElementById("orderbook").innerHTML = rows;
 });
 
-socket.on('balance', data => {
-    document.getElementById('balance').innerText = `BTC = ${data.btc} | USDT = ${data.usdt}`;
-    addHistory(data.btc, data.usdt);
+socket.on('balance', d => {
+    document.getElementById("balance").innerText =
+        `BTC = ${d.btc} | USDT = ${d.usdt}`;
 });
 
 function trade(side){
     fetch('/trade', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({side:side})
+        body: JSON.stringify({side})
     }).then(r=>r.json()).then(d=>alert(d.msg));
 }
 </script>
-
 </body>
-</html>
-"""
+</html>"""
 
-# -------------------- ROUTES --------------------
-@app.route('/')
+# ==================== ROUTES ====================
+@app.route("/")
 def index():
     resp = make_response(render_template_string(HTML))
-
-    if not request.cookies.get('usdt'):
-        resp.set_cookie('usdt', f"{DEFAULT_USDT}")
-        resp.set_cookie('btc', '0')
+    if not request.cookies.get("usdt"):
+        resp.set_cookie("usdt", f"{DEFAULT_USDT}")
+        resp.set_cookie("btc", "0")
+        debug("Initialize new player balance")
     return resp
 
-@app.route('/trade', methods=['POST'])
+@app.route("/trade", methods=["POST"])
 def trade():
-    side = request.json['side']
-    usdt = float(request.cookies.get('usdt', DEFAULT_USDT))
-    btc = float(request.cookies.get('btc', 0))
+    side = request.json["side"]
+    usdt = float(request.cookies.get("usdt", DEFAULT_USDT))
+    btc = float(request.cookies.get("btc", 0))
 
-    bids = market_data['bids']
-    asks = market_data['asks']
+    if not market_data["bids"] or not market_data["asks"]:
+        debug("Trade rejected: market data not ready")
+        return {"msg": "Market data not ready"}
 
-    if not bids or not asks:
-        return {'msg':'Market data not ready'}
+    bid = float(market_data["bids"][0][0])
+    ask = float(market_data["asks"][0][0])
 
-    bid = float(bids[0][0])
-    ask = float(asks[0][0])
+    debug(f"Trade request: {side} | bid={bid} ask={ask}")
 
-    if side == 'buy':
+    if side == "buy":
         if usdt < MIN_TRADE_USDT:
-            return {'msg':'USDT not enough to buy'}
+            return {"msg": "USDT not enough"}
         fee = usdt * FEE_RATE
-        net = usdt - fee
-        btc = round(net / ask, BTC_PRECISION)
+        btc = round((usdt - fee) / ask, BTC_PRECISION)
         usdt = 0
 
-    if side == 'sell':
+    if side == "sell":
         value = btc * bid
         if value < MIN_TRADE_USDT:
-            return {'msg':'BTC value not enough to sell'}
+            return {"msg": "BTC value not enough"}
         fee = btc * FEE_RATE
-        btc_after_fee = btc - fee
-        usdt = round(btc_after_fee * bid, USDT_PRECISION)
+        usdt = round((btc - fee) * bid, USDT_PRECISION)
         btc = 0
 
-    resp = make_response({'msg':'Trade executed'})
-    resp.set_cookie('usdt', f"{usdt}")
-    resp.set_cookie('btc', f"{btc}")
+    resp = make_response({"msg": "Trade executed"})
+    resp.set_cookie("usdt", str(usdt))
+    resp.set_cookie("btc", str(btc))
 
-    socketio.emit('balance', {'usdt':usdt,'btc':btc})
+    socketio.emit("balance", {"btc": btc, "usdt": usdt})
+    debug(f"Trade done → BTC={btc} USDT={usdt}")
     return resp
 
-# -------------------- SOCKET EVENTS --------------------
-@socketio.on('connect')
-def send_initial_balance():
-    usdt = float(request.cookies.get('usdt', DEFAULT_USDT))
-    btc = float(request.cookies.get('btc', 0))
-    emit('balance', {'usdt':usdt, 'btc':btc})
+# ==================== SOCKET ====================
+@socketio.on("connect")
+def on_connect():
+    usdt = float(request.cookies.get("usdt", DEFAULT_USDT))
+    btc = float(request.cookies.get("btc", 0))
+    emit("balance", {"btc": btc, "usdt": usdt})
+    debug("Client connected")
 
-# -------------------- BINANCE WS --------------------
-def binance_ws_loop():
+# ==================== BINANCE REST POLLER ====================
+def poll_binance():
+    debug("Start Binance REST polling thread")
     while True:
         try:
-            import websocket  # websocket-client
-            ws = websocket.create_connection(
-                "wss://stream.binance.com:9443/ws/btcusdt@depth5@1000ms",
-                timeout=10
+            r = requests.get(
+                BINANCE_DEPTH_URL,
+                params={"symbol": SYMBOL, "limit": DEPTH_LIMIT},
+                timeout=5
             )
-            print("CONNECTED TO BINANCE WS")
+            data = r.json()
+            market_data["bids"] = data["bids"]
+            market_data["asks"] = data["asks"]
 
-            while True:
-                msg = ws.recv()
-                print("BINANCE MSG RAW:", msg[:200])
-                d = json.loads(msg)
-                market_data['bids'] = d.get('bids', [])
-                market_data['asks'] = d.get('asks', [])
-                print(
-                    "MARKET UPDATED:", 
-                    len(market_data['bids']),
-                    len(market_data['asks']))
-                print("EMITTING MARKET TO CLIENTS")
-                socketio.emit('market', market_data)
+            socketio.emit("market", market_data)
+            debug("Market data updated")
+
         except Exception as e:
-            print("Binance WS error:", e)
-            socketio.sleep(3)
+            debug(f"Fetch error: {e}")
 
-# -------------------- MAIN --------------------
-import os
+        time.sleep(FETCH_INTERVAL)
 
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    socketio.start_background_task(binance_ws_loop)
-    socketio.run(
-        app,
-        host='0.0.0.0',
-        port=port,
-        allow_unsafe_werkzeug=True
-    )
-
+# ==================== MAIN ====================
+if __name__ == "__main__":
+    threading.Thread(target=poll_binance, daemon=True).start()
+    socketio.run(app, host="0.0.0.0", port=5000)
