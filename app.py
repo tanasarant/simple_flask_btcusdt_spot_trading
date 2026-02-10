@@ -121,7 +121,7 @@ function addHistory(btc, usdt){
     const row = `<tr><td>${btc}</td><td>${usdt}</td></tr>`;
     historyTable.innerHTML += row;
 }
-
+/*
 socket.on('market', data => {
     const bids = data.bids;
     const asks = data.asks;
@@ -134,6 +134,10 @@ socket.on('market', data => {
         rows += `<tr><td class='bid'>${b[0]}</td><td class='bid'>${b[1]}</td><td class='ask'>${a[0]}</td><td class='ask'>${a[1]}</td></tr>`;
     }
     document.getElementById('orderbook').innerHTML = rows;
+});
+*/
+socket.on('market', data => {
+    console.log("MARKET EVENT:", data);
 });
 
 socket.on('balance', data => {
@@ -219,11 +223,19 @@ def binance_ws_loop():
                 "wss://stream.binance.com:9443/ws/btcusdt@depth5@1000ms",
                 timeout=10
             )
+            print("CONNECTED TO BINANCE WS")
+
             while True:
                 msg = ws.recv()
+                print("BINANCE MSG RAW:", msg[:200])
                 d = json.loads(msg)
                 market_data['bids'] = d.get('bids', [])
                 market_data['asks'] = d.get('asks', [])
+                print(
+                    "MARKET UPDATED:", 
+                    len(market_data['bids']),
+                    len(market_data['asks']))
+                print("EMITTING MARKET TO CLIENTS")
                 socketio.emit('market', market_data)
         except Exception as e:
             print("Binance WS error:", e)
