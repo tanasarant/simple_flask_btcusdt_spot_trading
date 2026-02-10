@@ -230,9 +230,15 @@ def start_ws():
     loop.run_until_complete(ws_listener())
 
 # -------------------- MAIN --------------------
-import os 
+import os
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     threading.Thread(target=start_ws, daemon=True).start()
-    socketio.run(app, host='0.0.0.0', port=port)
+    socketio.run(
+        app,
+        host='0.0.0.0',
+        port=port,
+        allow_unsafe_werkzeug=True
+    )
+
