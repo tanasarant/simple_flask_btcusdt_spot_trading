@@ -8,8 +8,6 @@
 import time
 import threading
 import requests
-import eventlet
-eventlet.monkey_patch()
 
 from flask import Flask, render_template_string, request, make_response
 from flask_socketio import SocketIO, emit
@@ -19,7 +17,7 @@ app = Flask(__name__)
 
 socketio = SocketIO(
     app,
-    async_mode="eventlet",
+    async_mode="threading",
     cors_allowed_origins="*",
     logger=True,
     engineio_logger=True
