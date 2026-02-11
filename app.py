@@ -170,6 +170,7 @@ def poll_binance():
                 timeout=5
             )
             d = r.json()
+            print("[DEBUG] Binance response:", d)
             market_data["bids"] = d["bids"]
             market_data["asks"] = d["asks"]
             socketio.emit("market", market_data)
